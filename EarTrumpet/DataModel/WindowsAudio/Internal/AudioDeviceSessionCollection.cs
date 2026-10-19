@@ -1,4 +1,6 @@
 ﻿using EarTrumpet.DataModel.Audio;
+using EarTrumpet.Extensions;
+using EarTrumpet.Interop;
 using EarTrumpet.Interop.MMDeviceAPI;
 using System;
 using System.Collections.Generic;
@@ -12,6 +14,10 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
     class AudioDeviceSessionCollection : IAudioSessionNotification
     {
         public ObservableCollection<IAudioDeviceSession> Sessions => _sessions;
+
+        // Raised (from a background thread) when Windows reports that the session manager we hold
+        // belongs to an audio stack that no longer exists.
+        public event EventHandler Invalidated;
 
         private readonly Dispatcher _dispatcher;
         private readonly ObservableCollection<IAudioDeviceSession> _sessions = new ObservableCollection<IAudioDeviceSession>();
@@ -62,7 +68,8 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
                 }
                 catch (Exception ex)
                 {
-                    Trace.WriteLine($"AudioDeviceSessionCollection ConnectAndEnumerateSessions dev={_device.GetId()} {ex}");
+                    Trace.WriteLine($"AudioDeviceSessionCollection ConnectAndEnumerateSessions {ex}");
+                    RaiseInvalidatedIfNeeded(ex);
                 }
             }
         }
@@ -120,6 +127,7 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
             catch (Exception ex)
             {
                 Trace.WriteLine($"AudioDeviceSessionCollection CreateAndAddSession {ex}");
+                RaiseInvalidatedIfNeeded(ex);
 
                 // Let a later refresh try this session again.
                 if (sessionId != null)
@@ -129,6 +137,14 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
                         _knownSessionIds.Remove(sessionId);
                     }
                 }
+            }
+        }
+
+        private void RaiseInvalidatedIfNeeded(Exception ex)
+        {
+            if (ex.Is(HRESULT.AUDCLNT_E_DEVICE_INVALIDATED))
+            {
+                Invalidated?.Invoke(this, EventArgs.Empty);
             }
         }
 

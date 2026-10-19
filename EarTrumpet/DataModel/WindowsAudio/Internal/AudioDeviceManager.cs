@@ -46,6 +46,8 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
         private readonly ConcurrentDictionary<string, IAudioDevice> _deviceMap = new ConcurrentDictionary<string, IAudioDevice>();
         private readonly FilteredCollectionChain<IAudioDevice> _deviceFilter;
         private readonly ObservableCollection<IAudioDevice> _devices = new ObservableCollection<IAudioDevice>();
+        private readonly ConcurrentDictionary<string, RecreateAttempts> _recreateAttempts = new ConcurrentDictionary<string, RecreateAttempts>();
+        private readonly ConcurrentDictionary<IAudioDevice, bool> _pendingRecreates = new ConcurrentDictionary<IAudioDevice, bool>();
 
         public AudioDeviceManager(AudioDeviceKind kind)
         {
@@ -260,6 +262,45 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
             }
         }
 
+        internal void OnDeviceInvalidated(IAudioDevice device)
+        {
+            // Only the device we currently hold counts, and only once: an invalidated device reports
+            // every session it fails to open, and replaced devices may linger until they're collected.
+            if (!TryFind(device.Id, out var current) || current != device || !_pendingRecreates.TryAdd(device, true))
+            {
+                return;
+            }
+
+            // Avoid a tight loop if the endpoint stays broken.
+            int attempt;
+            var attempts = _recreateAttempts.GetOrAdd(device.Id, _ => new RecreateAttempts());
+            lock (attempts)
+            {
+                var now = DateTime.UtcNow;
+                if (now - attempts.Since > TimeSpan.FromMinutes(1))
+                {
+                    attempts.Count = 0;
+                    attempts.Since = now;
+                }
+                attempt = ++attempts.Count;
+            }
+
+            if (attempt > 5)
+            {
+                TraceLine($"OnDeviceInvalidated giving up on {device.Id}");
+                return;
+            }
+
+            TraceLine($"OnDeviceInvalidated {device.Id} attempt {attempt}");
+
+            // Give Windows a moment to finish rebuilding the endpoint before we activate it again.
+            Task.Delay(TimeSpan.FromMilliseconds(500 * attempt)).ContinueWith(_ =>
+            {
+                _pendingRecreates.TryRemove(device, out var unused);
+                RecreateDevice(device.Id);
+            });
+        }
+
         void IMMNotificationClient.OnDeviceRemoved(string pwstrDeviceId)
         {
             TraceLine($"OnDeviceRemoved {pwstrDeviceId}");
@@ -381,6 +422,12 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
             }
 
             return _deviceMap.TryGetValue(deviceId, out found);
+        }
+
+        private class RecreateAttempts
+        {
+            public int Count;
+            public DateTime Since;
         }
 
         private void TraceLine(string message)

@@ -52,6 +52,7 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
                 _meter = device.Activate<IAudioMeterInformation>();
                 _channels = new AudioDeviceChannelCollection(_deviceVolume, _dispatcher);
                 _sessions = new AudioDeviceSessionCollection(this, _device, _dispatcher);
+                _sessions.Invalidated += Sessions_Invalidated;
                 _sessionFilter = new FilteredCollectionChain<IAudioDeviceSession>(_sessions.Sessions, _dispatcher);
                 Groups = _sessionFilter.Items;
             }
@@ -198,6 +199,16 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
         public void RefreshSessions()
         {
             _sessions?.RefreshSessions();
+        }
+
+        private void Sessions_Invalidated(object sender, EventArgs e)
+        {
+            // Windows rebuilt the audio stack behind this endpoint (seen right after Bluetooth headphones
+            // connect), so everything we activated from it is dead. Only a new device object can recover.
+            if (_deviceManager.TryGetTarget(out var manager) && manager is AudioDeviceManager windowsManager)
+            {
+                windowsManager.OnDeviceInvalidated(this);
+            }
         }
 
         private void ReadProperties()

@@ -11,5 +11,6 @@ namespace EarTrumpet.DataModel.WindowsAudio
         string GetDefaultEndPoint(int processId);
         void MoveHiddenAppsToDevice(string appId, string deviceId);
         void UnhideSessionsForProcessId(string deviceId, int processId);
+        void RefreshSessions();
     }
 }

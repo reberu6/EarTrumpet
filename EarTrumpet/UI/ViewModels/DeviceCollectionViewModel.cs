@@ -216,6 +216,7 @@ namespace EarTrumpet.UI.ViewModels
         {
             _isFlyoutVisible = true;
             StartOrStopPeakTimer();
+            RefreshSessions();
         }
 
         public void OnTrayFlyoutHidden()
@@ -234,6 +235,13 @@ namespace EarTrumpet.UI.ViewModels
         {
             _isFullWindowVisible = true;
             StartOrStopPeakTimer();
+            RefreshSessions();
+        }
+
+        private void RefreshSessions()
+        {
+            // Pick up apps whose sessions Windows didn't announce, e.g. after Bluetooth headphones connect.
+            ((IAudioDeviceManagerWindowsAudio)_deviceManager).RefreshSessions();
         }
 
         public string GetTrayToolTip()

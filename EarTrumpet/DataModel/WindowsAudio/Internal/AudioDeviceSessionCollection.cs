@@ -16,6 +16,9 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
         private readonly Dispatcher _dispatcher;
         private readonly ObservableCollection<IAudioDeviceSession> _sessions = new ObservableCollection<IAudioDeviceSession>();
         private readonly List<IAudioDeviceSession> _movedSessions = new List<IAudioDeviceSession>();
+        private readonly HashSet<string> _knownSessionIds = new HashSet<string>();
+        private readonly object _enumerateLock = new object();
+        private readonly IMMDevice _device;
         private IAudioSessionManager2 _sessionManager;
         private WeakReference<IAudioDevice> _parent;
 
@@ -23,21 +26,44 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
         {
             _parent = new WeakReference<IAudioDevice>(parent);
             _dispatcher = foregroundDispatcher;
+            _device = device;
 
-            try
+            ConnectAndEnumerateSessions();
+        }
+
+        // Windows doesn't always raise OnSessionCreated for streams that move onto this device by themselves
+        // (e.g. when Bluetooth headphones connect and become the default device), and activating the session
+        // manager can fail while such an endpoint is still starting up. Enumerating again picks up what we missed.
+        public void RefreshSessions()
+        {
+            Trace.WriteLine($"AudioDeviceSessionCollection RefreshSessions");
+            ConnectAndEnumerateSessions();
+        }
+
+        private void ConnectAndEnumerateSessions()
+        {
+            lock (_enumerateLock)
             {
-                _sessionManager = device.Activate<IAudioSessionManager2>();
-                _sessionManager.RegisterSessionNotification(this);
-                var enumerator = _sessionManager.GetSessionEnumerator();
-                int count = enumerator.GetCount();
-                for (int i = 0; i < count; i++)
+                try
                 {
-                    CreateAndAddSession(enumerator.GetSession(i));
+                    if (_sessionManager == null)
+                    {
+                        var sessionManager = _device.Activate<IAudioSessionManager2>();
+                        sessionManager.RegisterSessionNotification(this);
+                        _sessionManager = sessionManager;
+                    }
+
+                    var enumerator = _sessionManager.GetSessionEnumerator();
+                    int count = enumerator.GetCount();
+                    for (int i = 0; i < count; i++)
+                    {
+                        CreateAndAddSession(enumerator.GetSession(i));
+                    }
                 }
-            }
-            catch (Exception ex)
-            {
-                Trace.WriteLine($"AudioDeviceSessionCollection Create dev={device.GetId()} {ex}");
+                catch (Exception ex)
+                {
+                    Trace.WriteLine($"AudioDeviceSessionCollection ConnectAndEnumerateSessions dev={_device.GetId()} {ex}");
+                }
             }
         }
 
@@ -53,16 +79,28 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
                 session.PropertyChanged -= MovedSession_PropertyChanged;
             }
 
-            _sessionManager.UnregisterSessionNotification(this);
+            _sessionManager?.UnregisterSessionNotification(this);
         }
 
         private void CreateAndAddSession(IAudioSessionControl session)
         {
+            string sessionId = null;
             try
             {
                 if (!_parent.TryGetTarget(out IAudioDevice parent))
                 {
                     throw new Exception("Device session parent is invalid but device is still notifying.");
+                }
+
+                // A session can be reported more than once (by OnSessionCreated and by a refresh), so only take it the first time.
+                ((IAudioSessionControl2)session).GetSessionInstanceIdentifier(out sessionId);
+                lock (_knownSessionIds)
+                {
+                    if (!_knownSessionIds.Add(sessionId))
+                    {
+                        sessionId = null;
+                        return;
+                    }
                 }
 
                 var newSession = new AudioDeviceSession(parent, session, _dispatcher);
@@ -82,6 +120,15 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
             catch (Exception ex)
             {
                 Trace.WriteLine($"AudioDeviceSessionCollection CreateAndAddSession {ex}");
+
+                // Let a later refresh try this session again.
+                if (sessionId != null)
+                {
+                    lock (_knownSessionIds)
+                    {
+                        _knownSessionIds.Remove(sessionId);
+                    }
+                }
             }
         }
 

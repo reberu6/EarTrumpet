@@ -167,6 +167,18 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
             }
         }
 
+        public void RefreshSessions()
+        {
+            var devices = _devices.ToArray();
+            Task.Factory.StartNew(() =>
+            {
+                foreach (var device in devices)
+                {
+                    ((IAudioDeviceInternal)device).RefreshSessions();
+                }
+            });
+        }
+
         public void UpdatePeakValues()
         {
             foreach (var device in _devices.ToArray())
@@ -195,6 +207,10 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
                             if (!TryFind(pwstrDeviceId, out IAudioDevice unused1))
                             {
                                 Add(newDevice);
+
+                                // The default device notification can arrive before the device is ready
+                                // (common with Bluetooth), in which case it couldn't be resolved then.
+                                QueryDefaultDevice();
                             }
                         }));
                     }
@@ -231,6 +247,10 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
                 {
                     QueryDefaultDevice();
                 }));
+
+                // Apps move their streams to the new default device shortly after this notification,
+                // and Windows doesn't always tell us about the sessions that arrive that way.
+                Task.Delay(TimeSpan.FromSeconds(2)).ContinueWith(_ => _dispatcher.BeginInvoke((Action)RefreshSessions));
             }
         }
 

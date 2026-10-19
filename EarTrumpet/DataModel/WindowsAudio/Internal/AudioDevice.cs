@@ -195,6 +195,11 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
             _sessions.MoveHiddenAppsToDevice(appId, id);
         }
 
+        public void RefreshSessions()
+        {
+            _sessions?.RefreshSessions();
+        }
+
         private void ReadProperties()
         {
             try

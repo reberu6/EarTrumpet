@@ -21,15 +21,18 @@ jobs:
             choco install netfx-4.6.2-devpack -y --no-progress
           }
 
-      - name: Provide Windows.winmd where the project expects it
+      - name: Point the project at the runner's Windows.winmd
         shell: powershell
         run: |
-          $root = "${env:ProgramFiles(x86)}\Windows Kits\10\UnionMetadata"
-          if (-not (Test-Path "$root\Windows.winmd")) {
-            $latest = Get-ChildItem $root -Directory | Where-Object { Test-Path "$($_.FullName)\Windows.winmd" } | Sort-Object { [version]$_.Name } | Select-Object -Last 1
-            Write-Output "Using $($latest.FullName)\Windows.winmd"
-            Copy-Item "$($latest.FullName)\Windows.winmd" "$root\Windows.winmd"
-          }
+          $winmd = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\UnionMetadata" -Recurse -Filter Windows.winmd -ErrorAction SilentlyContinue |
+            Where-Object { $_.Directory.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
+            Sort-Object { [version]$_.Directory.Name } | Select-Object -Last 1
+          if (-not $winmd) { Write-Output "::error::No Windows.winmd found under Windows Kits"; exit 1 }
+          Write-Output "::notice::Using $($winmd.FullName)"
+          $proj = "EarTrumpet\EarTrumpet.csproj"
+          $text = [IO.File]::ReadAllText($proj)
+          $text = $text.Replace('$(MSBuildProgramFiles32)\Windows Kits\10\UnionMetadata\10.0.16299.0\Windows.winmd', $winmd.FullName)
+          [IO.File]::WriteAllText($proj, $text)
 
       - name: Set up NuGet
         uses: NuGet/setup-nuget@v2

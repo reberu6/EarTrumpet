@@ -1,0 +1,60 @@
+name: Build EarTrumpet (fork)
+on:
+  push:
+    branches:
+      - fix/*
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install .NET Framework 4.6.2 Developer Pack
+        shell: powershell
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.6.2")) {
+            choco install netfx-4.6.2-devpack -y --no-progress
+          }
+
+      - name: Point the project at the runner's Windows.winmd
+        shell: powershell
+        run: |
+          $winmd = Get-ChildItem "${env:ProgramFiles(x86)}\Windows Kits\10\UnionMetadata" -Recurse -Filter Windows.winmd -ErrorAction SilentlyContinue |
+            Where-Object { $_.Directory.Name -match '^\d+\.\d+\.\d+\.\d+$' } |
+            Sort-Object { [version]$_.Directory.Name } | Select-Object -Last 1
+          if (-not $winmd) { Write-Output "::error::No Windows.winmd found under Windows Kits"; exit 1 }
+          Write-Output "::notice::Using $($winmd.FullName)"
+          $proj = "EarTrumpet\EarTrumpet.csproj"
+          $text = [IO.File]::ReadAllText($proj)
+          $text = $text.Replace('$(MSBuildProgramFiles32)\Windows Kits\10\UnionMetadata\10.0.16299.0\Windows.winmd', $winmd.FullName)
+          [IO.File]::WriteAllText($proj, $text)
+
+      - name: Set up NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore NuGet packages
+        run: nuget restore EarTrumpet.vs15.sln
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build EarTrumpet
+        shell: cmd
+        run: msbuild EarTrumpet/EarTrumpet.csproj /p:Platform=x86 /p:Configuration=Release /p:Channel=Chocolatey /p:OutputPath=%GITHUB_WORKSPACE%\artifacts\EarTrumpet\ -maxcpucount "-flp:errorsonly;logfile=%GITHUB_WORKSPACE%\msbuild-errors.log"
+
+      - name: Report build errors
+        if: failure()
+        shell: powershell
+        run: |
+          if (Test-Path msbuild-errors.log) { Get-Content msbuild-errors.log | Select-Object -Unique -First 40 | ForEach-Object { Write-Output "::error::$_" } }
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: EarTrumpet
+          path: artifacts/EarTrumpet

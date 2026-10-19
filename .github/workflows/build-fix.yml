@@ -1,0 +1,41 @@
+name: Build EarTrumpet (fork)
+on:
+  push:
+    branches:
+      - fix/*
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: windows-2022
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Install .NET Framework 4.6.2 Developer Pack
+        shell: powershell
+        run: |
+          if (-not (Test-Path "${env:ProgramFiles(x86)}\Reference Assemblies\Microsoft\Framework\.NETFramework\v4.6.2")) {
+            choco install netfx-4.6.2-devpack -y --no-progress
+          }
+
+      - name: Set up NuGet
+        uses: NuGet/setup-nuget@v2
+
+      - name: Restore NuGet packages
+        run: nuget restore EarTrumpet.vs15.sln
+
+      - name: Set up MSBuild
+        uses: microsoft/setup-msbuild@v2
+
+      - name: Build EarTrumpet
+        shell: cmd
+        run: msbuild EarTrumpet/EarTrumpet.csproj /p:Platform=x86 /p:Configuration=Release /p:Channel=Chocolatey /p:OutputPath=%GITHUB_WORKSPACE%\artifacts\EarTrumpet\ -maxcpucount
+
+      - name: Upload build
+        uses: actions/upload-artifact@v4
+        with:
+          name: EarTrumpet
+          path: artifacts/EarTrumpet

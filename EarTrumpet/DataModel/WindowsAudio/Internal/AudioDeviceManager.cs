@@ -107,10 +107,11 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
         private void QueryDefaultDevice()
         {
             TraceLine("QueryDefaultDevice");
-            var currentDeviceId = _default?.Id;
+            var previousDefault = _default;
             _default = GetDefaultDevice();
-            string newDeviceId = _default?.Id;
-            if (currentDeviceId != newDeviceId)
+
+            // Compare instances, not ids: a recreated device keeps its id but replaces the old object.
+            if (previousDefault != _default)
             {
                 DefaultChanged?.Invoke(this, _default);
             }
@@ -224,6 +225,41 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
             }
         }
 
+        // Throws away our wrapper for an endpoint and builds a new one, the same way restarting EarTrumpet would.
+        // Needed when Windows rebuilds the audio stack behind an endpoint (common with Bluetooth) without changing
+        // its id, since the old session manager then stops reporting sessions.
+        private void RecreateDevice(string pwstrDeviceId)
+        {
+            TraceLine($"RecreateDevice {pwstrDeviceId}");
+
+            try
+            {
+                var device = _enumerator.GetDevice(pwstrDeviceId);
+                if (((IMMEndpoint)device).GetDataFlow() != Flow ||
+                    device.GetState() != DeviceState.ACTIVE)
+                {
+                    return;
+                }
+
+                var newDevice = new AudioDevice(this, device, _dispatcher);
+
+                _dispatcher.Invoke((Action)(() =>
+                {
+                    if (TryFind(pwstrDeviceId, out IAudioDevice oldDevice))
+                    {
+                        Remove(oldDevice);
+                    }
+
+                    Add(newDevice);
+                    QueryDefaultDevice();
+                }));
+            }
+            catch (Exception ex)
+            {
+                TraceLine($"{ex}");
+            }
+        }
+
         void IMMNotificationClient.OnDeviceRemoved(string pwstrDeviceId)
         {
             TraceLine($"OnDeviceRemoved {pwstrDeviceId}");
@@ -260,7 +296,15 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
             switch (dwNewState)
             {
                 case DeviceState.ACTIVE:
-                    ((IMMNotificationClient)this).OnDeviceAdded(pwstrDeviceId);
+                    if (TryFind(pwstrDeviceId, out _))
+                    {
+                        // We missed it going away, so what we hold may be stale.
+                        RecreateDevice(pwstrDeviceId);
+                    }
+                    else
+                    {
+                        ((IMMNotificationClient)this).OnDeviceAdded(pwstrDeviceId);
+                    }
                     break;
                 case DeviceState.DISABLED:
                 case DeviceState.NOTPRESENT:
@@ -280,15 +324,9 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
             {
                 if (PropertyKeys.PKEY_AudioEndPoint_Interface.Equals(key))
                 {
-                    // We're racing with the system, the device may not be resolvable anymore.
-                    try
-                    {
-                        ((AudioDevice)dev).DevicePropertiesChanged(_enumerator.GetDevice(dev.Id));
-                    }
-                    catch (Exception ex)
-                    {
-                        TraceLine($"{ex}");
-                    }
+                    // The hardware behind this endpoint changed (e.g. a Bluetooth headset reconnected),
+                    // so the session manager and volume objects we hold no longer reflect it.
+                    RecreateDevice(dev.Id);
                 }
             }
         }

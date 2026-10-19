@@ -21,6 +21,16 @@ jobs:
             choco install netfx-4.6.2-devpack -y --no-progress
           }
 
+      - name: Provide Windows.winmd where the project expects it
+        shell: powershell
+        run: |
+          $root = "${env:ProgramFiles(x86)}\Windows Kits\10\UnionMetadata"
+          if (-not (Test-Path "$root\Windows.winmd")) {
+            $latest = Get-ChildItem $root -Directory | Where-Object { Test-Path "$($_.FullName)\Windows.winmd" } | Sort-Object { [version]$_.Name } | Select-Object -Last 1
+            Write-Output "Using $($latest.FullName)\Windows.winmd"
+            Copy-Item "$($latest.FullName)\Windows.winmd" "$root\Windows.winmd"
+          }
+
       - name: Set up NuGet
         uses: NuGet/setup-nuget@v2
 

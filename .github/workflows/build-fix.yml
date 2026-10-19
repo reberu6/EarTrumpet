@@ -32,7 +32,13 @@ jobs:
 
       - name: Build EarTrumpet
         shell: cmd
-        run: msbuild EarTrumpet/EarTrumpet.csproj /p:Platform=x86 /p:Configuration=Release /p:Channel=Chocolatey /p:OutputPath=%GITHUB_WORKSPACE%\artifacts\EarTrumpet\ -maxcpucount
+        run: msbuild EarTrumpet/EarTrumpet.csproj /p:Platform=x86 /p:Configuration=Release /p:Channel=Chocolatey /p:OutputPath=%GITHUB_WORKSPACE%\artifacts\EarTrumpet\ -maxcpucount "-flp:errorsonly;logfile=%GITHUB_WORKSPACE%\msbuild-errors.log"
+
+      - name: Report build errors
+        if: failure()
+        shell: powershell
+        run: |
+          if (Test-Path msbuild-errors.log) { Get-Content msbuild-errors.log | Select-Object -Unique -First 40 | ForEach-Object { Write-Output "::error::$_" } }
 
       - name: Upload build
         uses: actions/upload-artifact@v4

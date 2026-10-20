@@ -13,7 +13,7 @@ namespace EarTrumpet.Extensions
                 case HRESULT.AUDCLNT_E_DEVICE_INVALIDATED:
                 case HRESULT.AUDCLNT_S_NO_SINGLE_PROCESS:
                 case HRESULT.ERROR_NOT_FOUND:
-                    return (uint)(ex as COMException)?.HResult == (uint)type;
+                    return ex is COMException comException && (uint)comException.HResult == (uint)type;
                 default:
                     throw new NotImplementedException();
             }

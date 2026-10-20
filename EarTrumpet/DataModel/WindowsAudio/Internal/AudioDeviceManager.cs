@@ -48,6 +48,7 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
         private readonly ObservableCollection<IAudioDevice> _devices = new ObservableCollection<IAudioDevice>();
         private readonly ConcurrentDictionary<string, RecreateAttempts> _recreateAttempts = new ConcurrentDictionary<string, RecreateAttempts>();
         private readonly ConcurrentDictionary<IAudioDevice, bool> _pendingRecreates = new ConcurrentDictionary<IAudioDevice, bool>();
+        private readonly ConcurrentDictionary<string, int> _addRetries = new ConcurrentDictionary<string, int>();
 
         public AudioDeviceManager(AudioDeviceKind kind)
         {
@@ -112,11 +113,53 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
             var previousDefault = _default;
             _default = GetDefaultDevice();
 
+            if (_default == null)
+            {
+                EnsureDefaultDeviceTracked();
+            }
+
             // Compare instances, not ids: a recreated device keeps its id but replaces the old object.
             if (previousDefault != _default)
             {
                 DefaultChanged?.Invoke(this, _default);
             }
+        }
+
+        // Windows has a default device we don't hold, most likely because creating it failed while the
+        // endpoint was still starting up. Nothing else will make us try again, so do it here.
+        private void EnsureDefaultDeviceTracked()
+        {
+            try
+            {
+                var defaultId = _enumerator.GetDefaultAudioEndpoint(Flow, ERole.eMultimedia).GetId();
+                if (!TryFind(defaultId, out _) && !_addRetries.ContainsKey(defaultId))
+                {
+                    TraceLine($"EnsureDefaultDeviceTracked {defaultId} is missing");
+                    ScheduleAddRetry(defaultId);
+                }
+            }
+            catch (Exception ex) when (ex.Is(HRESULT.ERROR_NOT_FOUND))
+            {
+                // Expected: there's no default device at all.
+            }
+            catch (Exception ex)
+            {
+                TraceLine($"{ex}");
+            }
+        }
+
+        private void ScheduleAddRetry(string deviceId)
+        {
+            var attempt = _addRetries.AddOrUpdate(deviceId, 1, (_, previous) => previous + 1);
+            if (attempt > 5)
+            {
+                TraceLine($"ScheduleAddRetry giving up on {deviceId}");
+                _addRetries.TryRemove(deviceId, out _);
+                return;
+            }
+
+            TraceLine($"ScheduleAddRetry {deviceId} attempt {attempt}");
+            Task.Delay(TimeSpan.FromMilliseconds(500 * attempt)).ContinueWith(_ => ((IMMNotificationClient)this).OnDeviceAdded(deviceId));
         }
 
         public void SetDefaultDevice(IAudioDevice device, ERole role = ERole.eMultimedia)
@@ -203,6 +246,7 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
                         device.GetState() == DeviceState.ACTIVE)
                     {
                         var newDevice = new AudioDevice(this, device, _dispatcher);
+                        _addRetries.TryRemove(pwstrDeviceId, out _);
 
                         _dispatcher.Invoke((Action)(() =>
                         {
@@ -217,13 +261,24 @@ namespace EarTrumpet.DataModel.WindowsAudio.Internal
                             }
                         }));
                     }
+                    else
+                    {
+                        _addRetries.TryRemove(pwstrDeviceId, out _);
+                    }
                 }
                 catch (Exception ex)
                 {
                     // We catch Exception here because IMMDevice::Activate can return E_POINTER/NullReferenceException, as well as other expcetions listed here:
                     // https://docs.microsoft.com/en-us/dotnet/framework/interop/how-to-map-hresults-and-exceptions
                     TraceLine($"{ex}");
+
+                    // A Bluetooth endpoint can report ACTIVE before it can actually be activated.
+                    ScheduleAddRetry(pwstrDeviceId);
                 }
+            }
+            else
+            {
+                _addRetries.TryRemove(pwstrDeviceId, out _);
             }
         }
 
